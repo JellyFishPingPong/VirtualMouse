@@ -6,6 +6,7 @@ import argparse
 import itertools
 from collections import Counter
 from collections import deque
+from enum import Enum
 
 import cv2 as cv
 import numpy as np
@@ -31,6 +32,36 @@ drag_start_time = 0
 pyautogui.PAUSE = 0
 
 
+class FingerGesture(Enum):
+    STOP = 0
+    SWIPE = 1
+    MOVE = 2
+
+
+class HandSign(Enum):
+    OPEN = 0
+    CLOSE = 1
+    POINTER = 2
+    OK = 3
+    SLOW_SCROLL_UP = 4
+    SLOW_SCROLL_DOWN = 5
+    THUMBS_UP = 6
+    ROCK = 7
+    CLICK = 8
+    RIGHT_CLICK = 9
+
+
+class CursorMode(Enum):
+    MOVE = 0
+    SCROLL = 1
+    DRAG = 2
+
+
+class ScrollDirection(Enum):
+    SCROLL_UP = 0
+    SCROLL_DOWN = 1
+
+
 def get_args():
     parser = argparse.ArgumentParser()
 
@@ -54,15 +85,8 @@ def get_args():
 
 
 def main():
-    MOVE = 0
-    SCROLL = 1
-    DRAG = 2
-
-    SCROLL_UP = 0
-    SCROLL_DOWN = 1
-    scroll_direction = 0
+    scroll_direction = ScrollDirection.SCROLL_DOWN
     prev_scroll_y = 0
-    max_scroll_speed = 20  # Adjust to your preference
 
     # Argument parsing #################################################################
     args = get_args()
@@ -86,7 +110,7 @@ def main():
     mp_hands = mp.solutions.hands
     hands = mp_hands.Hands(
         static_image_mode=use_static_image_mode,
-        max_num_hands=1,
+        max_num_hands=2,
         min_detection_confidence=min_detection_confidence,
         min_tracking_confidence=min_tracking_confidence,
     )
@@ -139,27 +163,12 @@ def main():
     controls_on = False
     toggle_key = ord('c')  # You can change this key
 
-    # Define the hand sign
-    open_sign = 0
-    close_sign = 1
-    pointer_sign = 2
-    ok_sign = 3
-    slowScrollUp_sign = 4
-    slowScrollDown_sign = 5
-    thumbs_up_sign = 6
-    rock_sign = 7
-    click_sign = 8
-    right_click_sign = 9
-
     global open_start_time, close_start_time, ok_start_time, drag_start_time
 
-    cursor_mode = MOVE
-    swipe_triggered = False
-    can_click = True
-    can_click_r = True
-    can_change_direction = True
+    cursor_mode = CursorMode.MOVE
 
     previous_sign = 0
+    previous_gesture = 0
 
     while True:
         fps = cvFpsCalc.get()
@@ -194,6 +203,8 @@ def main():
 
             #  ####################################################################
             if results.multi_hand_landmarks is not None:
+                print(len(results.multi_hand_landmarks))
+
                 for hand_landmarks, handedness in zip(results.multi_hand_landmarks,
                                                       results.multi_handedness):
                     # Bounding box calculation
@@ -213,14 +224,11 @@ def main():
                     # Finger gesture classification
                     pre_processed_point_history_list = pre_process_point_history(
                         debug_image, point_history)
-                    finger_gesture_id = 0
+                    finger_gesture_id = FingerGesture.STOP
                     point_history_len = len(pre_processed_point_history_list)
                     if point_history_len == (history_length * 2):
-                        finger_gesture_id = point_history_classifier(
-                            pre_processed_point_history_list)
-
-                    if finger_gesture_id != 1:  # reset swipe availability when no swiping anymore
-                        swipe_triggered = False
+                        finger_gesture_id = FingerGesture(point_history_classifier(
+                            pre_processed_point_history_list))
 
                     # Calculates the gesture IDs in the latest detection
                     finger_gesture_history.append(finger_gesture_id)
@@ -228,11 +236,13 @@ def main():
                         finger_gesture_history).most_common()
 
                     # Hand sign classification
-                    hand_sign_id = keypoint_classifier(pre_processed_landmark_list)
+                    hand_sign_id = HandSign(keypoint_classifier(pre_processed_landmark_list))
+
+                    label = handedness.classification[0].label
 
                     # <editor-fold desc="Hand gesture with no conditions">
                     # OPEN SIGN
-                    if hand_sign_id == open_sign:
+                    if hand_sign_id == HandSign.OPEN:
                         if not controls_on:
                             if open_start_time == 0:
                                 open_start_time = time.time()
@@ -243,83 +253,43 @@ def main():
                     else:
                         open_start_time = 0
 
-                    # OKAY SIGN
-                    if hand_sign_id == ok_sign:
-                        if ok_start_time == 0:
-                            ok_start_time = time.time()
-                        elif time.time() - ok_start_time >= 1.5:
-                            print("Alt+F4 triggered after 1 second!")
-                            pyautogui.hotkey('alt', 'f4')
-                            ok_start_time = 0  # Reset the timer
-                    else:
-                        ok_start_time = 0
-
-                    if hand_sign_id == thumbs_up_sign and previous_sign != thumbs_up_sign:
-                        if scroll_direction == SCROLL_UP:
-                            scroll_direction = SCROLL_DOWN
-                        else:
-                            scroll_direction = SCROLL_UP
-
-                    if hand_sign_id == rock_sign and previous_sign != rock_sign:
-                        print("change mode")
-                        if cursor_mode != MOVE:
-                            cursor_mode = MOVE
-                        else:
-                            cursor_mode = SCROLL
-
-                    if cursor_mode == SCROLL:
-                        if hand_sign_id == pointer_sign:
-                            # Get index finger coordinates in camera frame pixels
-                            index_finger_y = int(landmark_list[8][1])
-
-                            # Calculate the difference between current and previous y-coordinate
-                            y_difference = index_finger_y - prev_scroll_y
-
-                            # Check if scrolling up
-                            if scroll_direction == SCROLL_UP and y_difference > 0:
-                                scroll_amount = abs(y_difference)
-                                pyautogui.scroll(scroll_amount)
-
-                            # Check if scrolling down
-                            elif scroll_direction == SCROLL_DOWN and y_difference < 0:
-                                scroll_amount = abs(y_difference)
-                                pyautogui.scroll(-scroll_amount)
-
-                            # Update the previous y-coordinate
-                            prev_scroll_y = index_finger_y
-
-                        if hand_sign_id == slowScrollUp_sign:
-                            pyautogui.scroll(20)
-
-                        if hand_sign_id == slowScrollDown_sign:
-                            pyautogui.scroll(-20)
-                    else:
-                        # CLOSE SIGN
-                        if hand_sign_id == close_sign:
-                            if close_start_time == 0:
-                                close_start_time = time.time()
-                            elif time.time() - close_start_time >= 1.5:
-                                print("off control triggered")
-                                controls_on = False
-                                close_start_time = 0  # Reset the timer
-                        else:
-                            close_start_time = 0
                     # </editor-fold>
 
                     point_history.append(landmark_list[8])
-                    # <editor-fold desc="Gesture that require control to be on">
-                    if controls_on:
 
-                        if hand_sign_id == rock_sign:
-                            if finger_gesture_id == 1 and not swipe_triggered and controls_on:
-                                pyautogui.hotkey('alt', 'esc')
-                                print("escaped")
-                                swipe_triggered = True
+                    # RIGHT hand logic
+                    if label == "Right":
+                        # <editor-fold desc="Gesture that require control to be on">
+                        if controls_on:
+                            # CLOSE SIGN
+                            if hand_sign_id == HandSign.CLOSE:
+                                if close_start_time == 0:
+                                    close_start_time = time.time()
+                                elif time.time() - close_start_time >= 1.5:
+                                    print("off control triggered")
+                                    controls_on = False
+                                    close_start_time = 0  # Reset the timer
+                            else:
+                                close_start_time = 0
 
-                        # CURSOR MOVE MODE
-                        if cursor_mode == MOVE:
+                            # OKAY SIGN
+                            if hand_sign_id == HandSign.OK:
+                                if ok_start_time == 0:
+                                    ok_start_time = time.time()
+                                elif time.time() - ok_start_time >= 1.5:
+                                    print("Alt+F4 triggered after 1 second!")
+                                    pyautogui.hotkey('alt', 'f4')
+                                    ok_start_time = 0  # Reset the timer
+                            else:
+                                ok_start_time = 0
 
-                            if hand_sign_id == pointer_sign:
+                            if hand_sign_id == HandSign.ROCK:
+                                if finger_gesture_id == FingerGesture.SWIPE and previous_gesture != FingerGesture.SWIPE:
+                                    pyautogui.hotkey('alt', 'esc')
+                                    print("escaped")
+
+                            # Move cursor
+                            if hand_sign_id == HandSign.POINTER:
                                 # Get index finger coordinates in camera frame pixels
                                 index_finger_x = int(landmark_list[8][0])
                                 index_finger_y = int(landmark_list[8][1])
@@ -336,12 +306,10 @@ def main():
                                     screen_y = max(min(screen_y, screen_height - margin), margin)
                                     pyautogui.moveTo(screen_x, screen_y, 0)
 
-                            if hand_sign_id == click_sign:
-                                if can_click and controls_on:
+                            if hand_sign_id == HandSign.CLICK:
+                                if previous_sign != HandSign.CLICK and controls_on:
                                     pyautogui.click()
-                                    print("click")
-                                    can_click = False
-                                if cursor_mode != DRAG:
+                                if cursor_mode != CursorMode.DRAG:
                                     if drag_start_time == 0:
                                         drag_start_time = time.time()
                                         print("Click hold started...")
@@ -349,33 +317,50 @@ def main():
                                         hold_duration = time.time() - drag_start_time
                                         if hold_duration >= 1:
                                             print("Entering drag mode...")
-                                            # cursor_mode = DRAG
+                                            # to be implemented
                                         else:
                                             print(f"Holding for {hold_duration:.2f} seconds...")
                             else:
-                                can_click = True
                                 drag_start_time = 0  # Reset the timer
 
-                            if hand_sign_id == right_click_sign:
-                                if can_click_r and controls_on:
+                            if hand_sign_id == HandSign.RIGHT_CLICK:
+                                if previous_sign != HandSign.RIGHT_CLICK and controls_on:
                                     pyautogui.click(button="right")
                                     print("right click")
-                                    can_click_r = False
-                            else:
-                                can_click_r = True
+                        else:
+                            point_history.append([0, 0])
+                        # </editor-fold>
+                    elif label == "Left":
+                        if hand_sign_id == HandSign.POINTER:
+                            # Get index finger coordinates in camera frame pixels
+                            index_finger_y = int(landmark_list[8][1])
 
-                        elif cursor_mode == SCROLL:
-                            pass
+                            # Calculate the difference between current and previous y-coordinate
+                            y_difference = index_finger_y - prev_scroll_y
 
-                        elif cursor_mode == DRAG:
-                            pass
+                            # Check if scrolling up
+                            if scroll_direction == ScrollDirection.SCROLL_UP and y_difference > 0:
+                                scroll_amount = abs(y_difference)
+                                pyautogui.scroll(scroll_amount)
 
+                            # Check if scrolling down
+                            elif scroll_direction == ScrollDirection.SCROLL_DOWN and y_difference < 0:
+                                scroll_amount = abs(y_difference)
+                                pyautogui.scroll(-scroll_amount)
 
-                    else:
-                        point_history.append([0, 0])
-                    # </editor-fold>
+                            # Update the previous y-coordinate
+                            prev_scroll_y = index_finger_y
+
+                        if hand_sign_id == HandSign.SLOW_SCROLL_UP:
+                            pyautogui.scroll(20)
+                            scroll_direction = ScrollDirection.SCROLL_UP
+
+                        if hand_sign_id == HandSign.SLOW_SCROLL_DOWN:
+                            pyautogui.scroll(-20)
+                            scroll_direction = ScrollDirection.SCROLL_DOWN
 
                     previous_sign = hand_sign_id
+                    previous_gesture = finger_gesture_id
 
                     # Drawing part
                     debug_image = draw_bounding_rect(use_brect, debug_image, brect)
@@ -384,8 +369,8 @@ def main():
                         debug_image,
                         brect,
                         handedness,
-                        keypoint_classifier_labels[hand_sign_id],
-                        point_history_classifier_labels[most_common_fg_id[0][0]],
+                        keypoint_classifier_labels[hand_sign_id.value],
+                        point_history_classifier_labels[most_common_fg_id[0][0].value],
                     )
             else:
                 clear_timer()
